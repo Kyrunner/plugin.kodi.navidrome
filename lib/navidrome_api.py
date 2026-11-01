@@ -167,6 +167,13 @@ class NavidromeAPI:
             return all_artists
         return []
     
+    def get_similar_songs(self, artist_id, count=50):
+        """Artist radio: songs by this artist and similar artists (getSimilarSongs2)"""
+        response = self._make_request('getSimilarSongs2', {'id': artist_id, 'count': count})
+        if response and 'similarSongs2' in response:
+            return response['similarSongs2'].get('song', [])
+        return []
+
     def get_artist(self, artist_id):
         """Get artist details including albums"""
         response = self._make_request('getArtist', {'id': artist_id})
@@ -251,7 +258,7 @@ class NavidromeAPI:
             return response['starred2'].get('album', [])
         return []
     
-    def get_cover_art_url(self, cover_art_id, size=300):
+    def get_cover_art_url(self, cover_art_id, size=1000):
         """Get cover art URL"""
         return self._build_url('getCoverArt', {'id': cover_art_id, 'size': size})
     

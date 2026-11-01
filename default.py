@@ -1,3 +1,4 @@
+import random
 import sys
 import urllib.parse
 
@@ -8,6 +9,7 @@ import xbmcplugin
 
 # Import our API wrapper
 from lib.navidrome_api import NavidromeAPI
+from lib import fanart as fanart_tv
 
 ADDON = xbmcaddon.Addon()
 ADDON_HANDLE = int(sys.argv[1])
@@ -134,7 +136,11 @@ def list_artists():
         cover_art = artist.get('coverArt')
         if cover_art:
             art_url = api.get_cover_art_url(cover_art)
-            li.setArt({"thumb": art_url, "fanart": art_url})
+            # real 16:9 backdrop when fanart.tv has one; cover is the fallback
+            bg = fanart_tv.get_artist_background(artist.get('musicBrainzId'))
+            li.setArt({"thumb": art_url, "fanart": bg or art_url})
+        
+        li.addContextMenuItems(artist_context_menu(artist_id, name))
         
         xbmcplugin.addDirectoryItem(
             handle=ADDON_HANDLE,
@@ -146,6 +152,51 @@ def list_artists():
     xbmcplugin.addSortMethod(ADDON_HANDLE, xbmcplugin.SORT_METHOD_ARTIST)
     xbmcplugin.setContent(ADDON_HANDLE, 'artists')
     xbmcplugin.endOfDirectory(ADDON_HANDLE)
+
+
+def artist_context_menu(artist_id, name):
+    """Context menu for an artist list item"""
+    return [(
+        'Artist Radio',
+        f'RunPlugin({build_url({"action": "artist_radio", "id": artist_id, "name": name})})'
+    )]
+
+
+def play_artist_radio(artist_id, name):
+    """Queue and play songs by this artist and similar artists"""
+    api = get_api()
+    if not api:
+        return
+    songs = api.get_similar_songs(artist_id, count=50)
+    if not songs:
+        xbmcgui.Dialog().notification(
+            'Navidrome',
+            f'No radio songs found for {name}',
+            xbmcgui.NOTIFICATION_INFO
+        )
+        return
+    random.shuffle(songs)
+    playlist = xbmc.PlayList(xbmc.PLAYLIST_MUSIC)
+    playlist.clear()
+    for song in songs:
+        li = xbmcgui.ListItem(label=song.get('title', 'Unknown Track'))
+        music_tag = li.getMusicInfoTag()
+        music_tag.setTitle(song.get('title', 'Unknown Track'))
+        music_tag.setArtist(song.get('artist', 'Unknown Artist'))
+        music_tag.setAlbum(song.get('album', ''))
+        music_tag.setDuration(int(song.get('duration', 0)))
+        music_tag.setMediaType('song')
+        li.setContentLookup(False)
+        cover_art = song.get('coverArt') or song.get('albumId')
+        if cover_art:
+            li.setArt({"thumb": api.get_cover_art_url(cover_art)})
+        playlist.add(api.get_stream_url(song.get('id')), li)
+    xbmcgui.Dialog().notification(
+        'Navidrome',
+        f'{name} radio: {len(songs)} songs',
+        xbmcgui.NOTIFICATION_INFO
+    )
+    xbmc.Player().play(playlist)
 
 
 def list_artist_albums(artist_id):
@@ -296,6 +347,9 @@ def add_track_item(api, track):
     music_tag.setAlbum(album_name)
     music_tag.setDuration(duration)  # Now it's an int
     music_tag.setTrack(track_number)
+    disc_number = track.get('discNumber') or 0  # KY 2026-09-30: sort multi-disc albums by disc then track
+    if disc_number:
+        music_tag.setDisc(int(disc_number))
     if year > 0:  # Only set year if valid
         music_tag.setYear(year)
     music_tag.setMediaType('song')
@@ -828,6 +882,8 @@ def search():
             art_url = api.get_cover_art_url(cover_art)
             li.setArt({"thumb": art_url})
         
+        li.addContextMenuItems(artist_context_menu(artist_id, name))
+        
         xbmcplugin.addDirectoryItem(
             handle=ADDON_HANDLE,
             url=url,
@@ -1143,6 +1199,8 @@ def router(paramstring):
         list_songs(int(params.get("offset", 0)))
     elif action == "play_track":
         play_track(params.get("id"))
+    elif action == "artist_radio":
+        play_artist_radio(params.get("id"), params.get("name", "Artist"))
     else:
         xbmc.log(f"Unknown action: {action}", xbmc.LOGWARNING)
         root_menu()
