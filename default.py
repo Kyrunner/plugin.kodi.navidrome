@@ -139,6 +139,11 @@ def list_artists():
             # real 16:9 backdrop when fanart.tv has one; cover is the fallback
             bg = fanart_tv.get_artist_background(artist.get('musicBrainzId'))
             li.setArt({"thumb": art_url, "fanart": bg or art_url})
+        # KY 2026-11-01: fanart.tv clearlogo (setArt merges keys)
+        fanart_tv.remember_artist(artist_id, artist.get('musicBrainzId'))
+        extra = fanart_tv.art_for(artist_mbid=artist.get('musicBrainzId'))
+        if extra:
+            li.setArt(extra)
         
         li.addContextMenuItems(artist_context_menu(artist_id, name))
         
@@ -217,6 +222,7 @@ def list_artist_albums(artist_id):
         return
     
     albums = artist.get('album', [])
+    fanart_tv.remember_artist(artist_id, artist.get('musicBrainzId'))  # KY 2026-11-01
     
     for album in albums:
         add_album_item(api, album)
@@ -252,6 +258,12 @@ def add_album_item(api, album):
     if cover_art:
         art_url = api.get_cover_art_url(cover_art)
         li.setArt({"thumb": art_url, "fanart": art_url})
+    # KY 2026-11-01: fanart.tv clearlogo + discart (setArt merges keys)
+    fanart_tv.remember_album(album_id, album.get('musicBrainzId'))
+    extra = fanart_tv.art_for(nav_artist_id=artist_id, nav_album_id=album_id,
+                              release_mbid=album.get('musicBrainzId'))
+    if extra:
+        li.setArt(extra)
     
     # Build context menu
     context_menu = []
@@ -397,6 +409,10 @@ def add_track_item(api, track):
     if cover_art:
         art_url = api.get_cover_art_url(cover_art)
         li.setArt({"thumb": art_url})
+    # KY 2026-11-01: fanart.tv clearlogo + discart (setArt merges keys)
+    extra = fanart_tv.art_for(nav_artist_id=artist_id, nav_album_id=album_id)
+    if extra:
+        li.setArt(extra)
     
     # Build context menu
     context_menu = []
@@ -881,6 +897,10 @@ def search():
         if cover_art:
             art_url = api.get_cover_art_url(cover_art)
             li.setArt({"thumb": art_url})
+        # KY 2026-11-01: fanart.tv clearlogo
+        extra = fanart_tv.art_for(nav_artist_id=artist_id, artist_mbid=artist.get('musicBrainzId'))
+        if extra:
+            li.setArt(extra)
         
         li.addContextMenuItems(artist_context_menu(artist_id, name))
         
