@@ -799,7 +799,7 @@ class NavidromeAPI:
         return []
 
     # Media
-    def get_cover_art_url(self, cover_art_id, size=300):
+    def get_cover_art_url(self, cover_art_id, size=1000):
         """Get cover art URL (fetched by Kodi)."""
         return self.kodi_url(self._build_url('getCoverArt', {'id': cover_art_id, 'size': size}))
 

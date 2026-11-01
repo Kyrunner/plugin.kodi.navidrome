@@ -1,3 +1,4 @@
+import random
 import sys
 import urllib.parse
 
@@ -7,6 +8,7 @@ import xbmcgui
 import xbmcplugin
 
 # Import our API wrapper
+from lib import fanart as fanart_tv
 from lib import vfs
 from lib.navidrome_api import NavidromeAPI
 
@@ -206,6 +208,91 @@ def empty_directory(message, offset=0):
     xbmcplugin.endOfDirectory(ADDON_HANDLE, cacheToDisc=False)
 
 
+def item_mbid(item, *keys):
+    """First non-empty MusicBrainz id.
+
+    Subsonic calls it musicBrainzId. 0.6.0's native API uses mbzArtistId on
+    artists and mbzAlbumId on albums.
+    """
+    if not item:
+        return None
+    for key in keys:
+        value = item.get(key)
+        if value:
+            return value
+    return None
+
+
+def apply_fanart(li, **kwargs):
+    """Merge fanart.tv clearlogo/discart onto a list item.
+
+    Art is cosmetic: a missing key or a fanart.tv error leaves the Navidrome
+    cover in place and must not break the directory.
+    """
+    try:
+        extra = fanart_tv.art_for(**kwargs)
+        if extra:
+            li.setArt(extra)
+    except Exception:
+        xbmc.log("NAVIDROME: fanart.tv art skipped", xbmc.LOGDEBUG)
+
+
+def artist_context_menu(artist_id, name):
+    """Context menu for an artist list item."""
+    if not artist_id:
+        return []
+    return [(
+        'Artist Radio',
+        f'RunPlugin({build_url({"action": "artist_radio", "id": artist_id, "name": name})})'
+    )]
+
+
+def play_artist_radio(artist_id, name):
+    """Queue songs by this artist and similar artists.
+
+    Playlist entries are plugin URLs so playback still resolves in play_track,
+    which applies the offline cache and the TLS protocol options.
+    """
+    api = get_api()
+    if not api or not artist_id:
+        return
+    songs = api.get_similar_songs(artist_id, count=50)
+    if not songs:
+        xbmcgui.Dialog().notification(
+            'Navidrome',
+            f'No radio songs found for {name}',
+            xbmcgui.NOTIFICATION_INFO
+        )
+        return
+    random.shuffle(songs)
+    playlist = xbmc.PlayList(xbmc.PLAYLIST_MUSIC)
+    playlist.clear()
+    for song in songs:
+        title = song.get('title') or song.get('name', 'Unknown Track')
+        li = xbmcgui.ListItem(label=title)
+        music_tag = li.getMusicInfoTag()
+        music_tag.setTitle(title)
+        music_tag.setArtist(song.get('artist') or song.get('artistName', 'Unknown Artist'))
+        music_tag.setAlbum(song.get('album') or song.get('albumName', ''))
+        music_tag.setDuration(int(song.get('duration') or 0))
+        music_tag.setMediaType('song')
+        disc_number = song.get('discNumber') or 0
+        if disc_number:
+            music_tag.setDisc(int(disc_number))
+        li.setContentLookup(False)
+        li.setProperty('IsPlayable', 'true')
+        cover_art = song.get('coverArt') or song.get('albumId')
+        if cover_art:
+            li.setArt({"thumb": api.get_cover_art_url(cover_art)})
+        playlist.add(build_url({"action": "play_track", "id": song.get('id')}), li)
+    xbmcgui.Dialog().notification(
+        'Navidrome',
+        f'{name} radio: {len(songs)} songs',
+        xbmcgui.NOTIFICATION_INFO
+    )
+    xbmc.Player().play(playlist)
+
+
 # List item builders
 def list_artists(offset=0, limit=None):
     """List all artists"""
@@ -248,13 +335,27 @@ def list_artists(offset=0, limit=None):
         if rating:
             music_tag.setUserRating(rating * 2)
 
-        # Add cover art if available
+        # Cover from Navidrome; a fanart.tv backdrop replaces the stretched cover.
+        mbid = item_mbid(artist, 'musicBrainzId', 'mbzArtistId')
         cover_art = artist.get('coverArt')
         if cover_art:
             art_url = api.get_cover_art_url(cover_art)
-            li.setArt({"thumb": art_url, "fanart": art_url})
+            bg = None
+            try:
+                bg = fanart_tv.get_artist_background(mbid)
+            except Exception:
+                bg = None
+            li.setArt({"thumb": art_url, "fanart": bg or art_url})
 
-        li.addContextMenuItems(rating_context_items(artist_id, 'artist', name))
+        try:
+            fanart_tv.remember_artist(artist_id, mbid)
+        except Exception:
+            pass
+        apply_fanart(li, artist_mbid=mbid)
+
+        menu = rating_context_items(artist_id, 'artist', name)
+        menu.extend(artist_context_menu(artist_id, name))
+        li.addContextMenuItems(menu)
 
         xbmcplugin.addDirectoryItem(
             handle=ADDON_HANDLE,
@@ -287,6 +388,11 @@ def list_artist_albums(artist_id):
         return
 
     albums = artist.get('album', [])
+    try:
+        fanart_tv.remember_artist(
+            artist_id, item_mbid(artist, 'musicBrainzId', 'mbzArtistId'))
+    except Exception:
+        pass
 
     for album in albums:
         add_album_item(api, album)
@@ -341,6 +447,20 @@ def add_album_item(api, album):
     if cover_art:
         art_url = api.get_cover_art_url(cover_art)
         li.setArt({"thumb": art_url, "fanart": art_url})
+
+    release_mbid = item_mbid(album, 'musicBrainzId', 'mbzAlbumId')
+    try:
+        fanart_tv.remember_album(album_id, release_mbid)
+    except Exception:
+        pass
+    apply_fanart(
+        li,
+        nav_artist_id=artist_id,
+        # Native albums carry the artist MBID here; musicBrainzId is the release.
+        artist_mbid=item_mbid(album, 'mbzAlbumArtistId'),
+        nav_album_id=album_id,
+        release_mbid=release_mbid,
+    )
 
     # Build context menu
     context_menu = []
@@ -468,6 +588,10 @@ def add_track_item(api, track, cache=None):
     music_tag.setAlbum(album_name)
     music_tag.setDuration(duration)  # Now it's an int
     music_tag.setTrack(track_number)
+    # Multi-disc albums sort by disc, then track, once the disc is on the tag.
+    disc_number = track.get('discNumber') or 0
+    if disc_number:
+        music_tag.setDisc(int(disc_number))
     if year > 0:  # Only set year if valid
         music_tag.setYear(year)
     music_tag.setMediaType('song')
@@ -496,6 +620,14 @@ def add_track_item(api, track, cache=None):
 
     if art_url:
         li.setArt({"thumb": art_url})
+    apply_fanart(
+        li,
+        nav_artist_id=artist_id,
+        artist_mbid=item_mbid(track, 'mbzArtistId'),
+        nav_album_id=album_id,
+        # Recording MBIDs are not release-group ids; only the native album id is.
+        release_mbid=item_mbid(track, 'mbzAlbumId'),
+    )
 
     # Build context menu
     context_menu = []
@@ -850,6 +982,10 @@ def search():
         if cover_art:
             art_url = api.get_cover_art_url(cover_art)
             li.setArt({"thumb": art_url})
+
+        mbid = item_mbid(artist, 'musicBrainzId', 'mbzArtistId')
+        apply_fanart(li, nav_artist_id=artist_id, artist_mbid=mbid)
+        li.addContextMenuItems(artist_context_menu(artist_id, name))
 
         xbmcplugin.addDirectoryItem(
             handle=ADDON_HANDLE,
@@ -1429,6 +1565,8 @@ def router(paramstring):
         add_to_playlist_dialog(params.get("id"), params.get("name"))
     elif action == "similar_songs":
         list_similar_songs(params.get("id"), params.get("name"))
+    elif action == "artist_radio":
+        play_artist_radio(params.get("id"), params.get("name", "Artist"))
     elif action == "genres":
         list_genres()
     elif action == "genre":
